@@ -1,25 +1,24 @@
-# 1.Jordan-Wigner transformation
-# 2.Hatano-Nelson Hamiltonian and the 2**7 by 2**7 global operator
-# 3.SSH Hamiltonian
-# 4.physical and ancilla qubits register (global and local)
-# 5.encoding non-unitary U_{\pm} in bigger unitary matrices R_{R_{\pm}}
-
-# 6. quimb tensornetwork optimization
-# 7. measurement (aer simualtor, shots)
-# 8. dynamical density evolution ni(T) encoding
-# 9. dynamical density evolution plot (heatmap and colorbar)
+# 0. Operators/gates basics 
+# 1. Hatano-Nelson Hamiltonian (2**6 by 2**6)
+# 2. unitary extension of HN model (2**7 by 2**7)
+# 3. ansatz for HN model  (initial layer + depth * single layer)
+# 4. Quimb TensorNetwork optimization (the target is a trotterized result)
+# 5. Convert tensor network to Qiskit quantum circuit; define initially prepared state
+# 6. get statevector and measurement counts at each time step 
+# 7. post-selection of spinup ancilla qubit 
+# 8. dynamical density evolution ni(T) calculation  
+# 9. NHSE dynamics plot of HN model (fig. S2)   
 
 import qiskit
 import qiskit_aer
 import qiskit_algorithms 
 from qiskit import QuantumRegister, QuantumCircuit, ClassicalRegister, AncillaRegister 
-from qiskit.quantum_info import Statevector, state_fidelity
-from qiskit.quantum_info import Operator
-from qiskit.quantum_info import Pauli
+from qiskit.quantum_info import Statevector, state_fidelity, Operator, Pauli
 from qiskit.circuit import Parameter
+from qiskit.circuit.library import U3Gate, CXGate
 from qiskit.circuit.library import IGate, XGate, YGate, ZGate, UnitaryGate, RXGate
 from qiskit import transpile 
-from qiskit_aer import AerSimulator
+from qiskit_aer import AerSimulator, StatevectorSimulator
 
 import quimb as qu
 import quimb.tensor as qtn
@@ -29,16 +28,14 @@ import math
 import matplotlib.pyplot as plt 
 
 
-# 1.Jordan-Winger transformation (spin operators onto fermionic annihilation/creation operators)
-# specific in a sense that it is a 1D spin chain model
-# general in a sense that it applies to all N number of sites, with each being i or j 
+# 0. Operators/gates basics 
 
-# 1.Pauli matrices 
+# Pauli matrices 
 pauli_x = Pauli('X')
 pauli_y = Pauli('Y')
 pauli_z = Pauli('Z')
 
-# 2.Pauli lowering/rising operators
+# Pauli lowering/rising operators
 sigma_x = pauli_x.to_matrix()
 sigma_y = pauli_y.to_matrix()
 sigma_z = pauli_z.to_matrix()
@@ -48,341 +45,187 @@ sigma_plus = (sigma_x + 1j *sigma_y)/2
 sigma_minus = (sigma_x - 1j *sigma_y)/2
 
 
+# 1. Hatano-Nelson Hamiltonian (2**6 by 2**6)
 
-# 2.Hatano-Nelson Hamiltonian
 # H_HN= -\sum^{L-2}_{j=0} ( (J+\gamma)X^+_j*X^-_{j+1} + (J-\gamma)X^-_j*X^+_j+1)
 # X^+_j = \ket{\uparrow}\bra{\uparrow},  X^-_j = \ket{\downarrow}\bra{\downarrow}
 
 def HN_ham (length_l:int, J, gamma):
     H1=np.zeros((2**(length_l), 2**(length_l)), dtype=complex)
     H2=np.zeros((2**(length_l), 2**(length_l)), dtype=complex)
-
+    
     # (J+\gamma) H1 part 
     for i in range(length_l-1): # 0,1,2,3,4
-        sigma_prod = np.kron(sigma_minus, sigma_plus)
-
-        if i < (length_l-2):
-            pre_sigma = identity
-            for _ in range(length_l-i-3): 
-                pre_sigma= np.kron(pre_sigma, identity)
-            result = np.kron(pre_sigma, sigma_prod)
-        else:
-            result = sigma_prod 
-        
+        sigma_prod = np.kron(sigma_plus, sigma_minus)
 
         if i > 0:
-            post_sigma = identity 
-            for _ in range(i-1): 
-                post_sigma = np.kron(post_sigma, identity)
+            pre_sigma = identity
+            for _ in range(i-1):
+                pre_sigma = np.kron(pre_sigma, identity)
+            result = np.kron(pre_sigma, sigma_prod)
+        else:
+            result = sigma_prod
+
+
+        if i < (length_l-2):
+            post_sigma = identity
+            for _ in range(length_l-3-i):  
+                post_sigma = np.kron(post_sigma,identity)
             result = np.kron(result, post_sigma)
-    
+        else:
+            result = result     
         H1 += result
     H1 = -1 * (J+gamma) * H1 
-    #print(f"final H1 is {H1}")
 
 
     # (J-\gamma) H2 part 
-    for i in range(length_l-1): # 0,1,2,3,4
-        sigma_prod = np.kron(sigma_plus, sigma_minus)
+    for i in range(length_l-1): 
+        sigma_prod = np.kron(sigma_minus, sigma_plus)
+
+        if i > 0:
+            pre_sigma = identity
+            for _ in range(i-1):
+                pre_sigma = np.kron(pre_sigma, identity)
+            result = np.kron(pre_sigma, sigma_prod)
+        else:
+            result = sigma_prod
+
 
         if i < (length_l-2):
-            pre_sigma = identity
-            for _ in range(length_l-i-3): 
-                pre_sigma= np.kron(pre_sigma, identity)
-            result = np.kron(pre_sigma, sigma_prod)
-        else:
-            result = sigma_prod 
-        
-
-        if i > 0:
-            post_sigma = identity 
-            for _ in range(i-1): 
-                post_sigma = np.kron(post_sigma, identity)
+            post_sigma = identity
+            for _ in range(length_l-3-i):  
+                post_sigma = np.kron(post_sigma,identity)
             result = np.kron(result, post_sigma)
-    
+        else:
+            result = result 
+            
         H2 += result
-    H2 = -1 * (J+gamma) * H1 
-    #print(f"final H1 is {H2}")
-
-    H = H1 + H2 
-    return H 
-
-
-# 3.SSH Hamiltonian 
-# H_SSH= -\sum^{L/2}_j=0 ( (J+\gamma)X^+_{2j}*X^-_{2j+1} + (J-\gamma)X^-_{2j}*X^+_{2j+1}) +
-# J/2 -\sum^{L/2-1}_{j=0} (X_{2j+1}*X_{2j+2} + Y_{2j+1}*Y_{2j+2} ))
-def ssh_ham (length_l, J, gamma):
-    H1=np.zeros((2**(length_l+2), 2**(length_l+2)), dtype=complex)
-    H2=np.zeros((2**(length_l+2), 2**(length_l+2)), dtype=complex)
-    H3=np.zeros((2**(length_l+2), 2**(length_l+2)), dtype=complex)
-    H4=np.zeros((2**(length_l+2), 2**(length_l+2)), dtype=complex)
-    #print(f"shape of H {H.shape}")
-
-    # H1: (J+\gamma) part 
-    for i in range(length_l/2):
-        sigma_prod = np.kron(sigma_plus, sigma_minus)
-        identities=np.kron(identity, identity)
-        pre_sigma = np.kron(identity, identity)
-        post_sigma = np.kron(identity, identity)
-            
-        if i > 0:
-            for _ in range(i-2):
-                pre_sigma = np.kron(pre_sigma, identities)
-            result = np.kron(pre_sigma, sigma_prod)
-        
-        else: 
-            result = sigma_prod
-
-
-        if i < (length_l/2): # i=0,1,2
-            for _ in range(length_l/2-i-1): # i=0, 1,2
-                post_sigma=np.kron(post_sigma, identities)
-                
-            result = np.kron(result, post_sigma)
-        else:
-            result = result 
-            
-        H1 += result 
-    H1 = -1 * (J+gamma) * H1 
-
-
-    # H2: (J-\gamma) part 
-    for i in range(length_l/2):
-        sigma_prod = np.kron(sigma_minus, sigma_plus)
-        identities=np.kron(identity, identity)
-        pre_sigma = np.kron(identity, identity)
-        post_sigma = np.kron(identity, identity)
-            
-        if i > 0:
-            for _ in range(i-2):
-                pre_sigma = np.kron(pre_sigma, identities)
-            result = np.kron(pre_sigma, sigma_prod)
-        
-        else: 
-            result = sigma_prod
-
-
-        if i < (length_l/2): # i=0,1,2
-            for _ in range(length_l/2-i-1): # i=0, 1,2
-                post_sigma=np.kron(post_sigma, identities)
-                
-            result = np.kron(result, post_sigma)
-        else:
-            result = result 
-            
-        H2 += result 
     H2 = -1 * (J-gamma) * H2
-
-
-    # H3: sigma-x part 
-    for i in range(length_l/2-1):  # i = 0,1,2
-        sigmax_prod = np.kron(sigma_x, sigma_x)
-        identities = np.kron(identity, identity)
-        pre_sigma = identity 
-        post_sigma = identity
-        
-        for _ in range(i): # i=0,1,2
-            pre_sigma = np.kron(pre_sigma, identities)
-            result = np.kron(pre_sigma, sigmax_prod)
-        
-        for _ in range(length_l/2-i-1): 
-            post_sigma = np.kron(post_sigma, identities)
-            result = np.kron(result, post_sigma)
-        
-        H3 += result 
-    H3 = -1 * (J/2) H3
-
-
-    # H4: sigma-y part 
-    for i in range(length_l/2-1):  # i = 0,1,2
-        sigmay_prod = np.kron(sigma_y, sigma_y)
-        identities = np.kron(identity, identity)
-        pre_sigma = identity 
-        post_sigma = identity
-        
-        for _ in range(i): # i=0,1,2
-            pre_sigma = np.kron(pre_sigma, identities)
-            result = np.kron(pre_sigma, sigmax_prod)
-        
-        for _ in range(length_l/2-i-1): 
-            post_sigma = np.kron(post_sigma, identities)
-            result = np.kron(result, post_sigma)
-        
-        H4 += result 
-    H4 = -1 * (J/2) H4
     
-    H = H1 + H2 + H3 + H4
+    H = H1 + H2
     return H 
 
 
-# 4.1 HN model global ancilla qubit register 
-n=9
-psi0= QuantumRegister(n) 
-circ = QuantumCircuit(psi0)
-circ.draw()
+# HN model with interaction 
+# HN_ham += U \sum^{L-1}_{i} \hat{n}_i \hat{n}_{i+1}
 
-# prepare initial state (but to flip the qubits to spin-up state)
-# Apply X gate to all qubits to prepare the |111...1> state
-for i in range(n):
-    circ.x(i)
-
-# one ancilla qubit is "globally" attached to 6 physical qubit 
-#n= 9
-
-#pq = QuantumRegister(7, name = "physical")
-#aq = QuantumRegister(2, name = "ancilla")
-
-#qc_global = QuantumCircuit(aq,pq) # fig. 7(b)
+# n_i = \ket{\uparrow}_i \bra{\uparrow}
+J = 2
+U =  5*J
+n_i = [[1,0],[0,0]]
+n_i = np.array(n_i)
+n_i_prod = U * np.kron(n_i, n_i)
+identity = [[1,0], [0,1]]
+identity = np.array(identity)
 
 
-# 4.2 SSH model local ancilla qubit register 
+def HN_interaction(length_l:int):
+    interaction=np.zeros((2**(length_l), 2**(length_l)), dtype=complex)
 
-#pq = QuantumRegister(2, name = "physical")
-#aq = QuantumRegister(1, name = "ancilla")
-
-# fig. 7(a)
-#qc_local = QuantumCircuit(aq,pq) 
-
-
-# 5.encoding non-unitary U_{\pm} in bigger unitary matrices R_{R_{\pm}}
-# 7 qubits to represent a 2**7 by 2**7 matrix 
-
-# U3 gates, eqn. (27)
-theta = Parameter('theta')
-phi = Parameter('phi')
-lam= Parameter('lambda')
-
-u3_matrix = np.array([
-    [np.cos(theta / 2), -np.exp(1j * lam) * np.sin(theta / 2)],
-    [np.exp(1j * phi) * np.sin(theta / 2), np.exp(1j * (phi + lam)) * np.cos(theta / 2)]
-])
+    for i in range(0,length_l-1):
+        n_i_prod = np.kron(n_i, n_i)
+        operators = [identity] * (length_l-1)
+        operators[i] = n_i_prod  
+        
+        result = operators[0]
+        for op in operators[1:]:
+            result = np.kron(result, op)
+        interaction += result   
+        print(result.shape)
+    interaction = U * interaction 
 
 
-# 7. eqn. (S9) 
-phi = Parameter('phi')
-H = HN_ham(6, 1, 0.5)
+# 2. unitary extension of HN hamiltonian (2**7 by 2**7)
 
-H_daggar = (H. transpose()).conjugate()
+H = HN_ham(length_l=6, J = 2, gamma=0.5)
+
+tot_t = 4
+delta_t = 0.1
+
+# matrix extension (2**6 by 2**6 --> 2**7 by 2**7)
+R_HN = np.exp(-1j * H * delta_t)
+R_HN_daggar = (R_HN.transpose()).conjugate()
 identity_64 = identity 
 for i in range(5):
     identity_64 = np.kron(identity_64, identity)
- 
-C_H = -1* np.sqrt(identity_64 - H * H_daggar )
+C_H = -1* np.sqrt(identity_64 - R_HN  * R_HN_daggar)
 B_H = -1 * C_H
-D_H= H
-top_H = np.hstack((H, B_H))
+D_H= R_HN
+top_H = np.hstack((R_HN, B_H))
 bottom_H = np.hstack((C_H, D_H))
-unitary_H = np.vstack((top_H, bottom_H))
+U_HN = np.vstack((top_H, bottom_H))  # eqn. (S8)
+
+# numerical calculation [U_HN]^{T\delta_t}, RHS of eqn. (S10) 
+exp_HN_T = U_HN **(tot_t/delta_t)  
 
 
-# 6. tensornetwork for NH model 
 
-# 6.1 U3, CX gates
-def single_qubit_layer(circ, gate_round=None):
-    """Apply a parametrizable layer of single qubit ``U3`` gates.
-    """
-    for i in range(circ.N):
-        # initialize with random parameters
+# 3. ansatz for HN model (initial layer + depth * single layer)
+
+def initial_layer(TN_circ, qubit_no: int, gate_round=None):
+    for i in range(qubit_no):
         params = qu.randn(3, dist='uniform')
-        circ.apply_gate(
+        TN_circ.apply_gate(
             'U3', *params, i, 
-            gate_round=gate_round, parametrize=True)
+            parametrize=True, gate_round=gate_round
+        )
 
 
-def two_qubit_layer(circ, gate2='CX', reverse=False, gate_round=None):
-    """Apply a layer of constant entangling gates.
-    """
-    regs = range(0, circ.N - 1)
-    if reverse:
-        regs = reversed(regs)
+def single_layer(TN_circ, qubit_no: int, gate_round=None):
+    # even-odd pairs
+    for i in range(0, qubit_no - 1, 2):   
+        TN_circ.apply_gate('CX', i, i + 1, gate_round=gate_round)
+         
+    for i in range(qubit_no-1):
+        params = qu.randn(3, dist='uniform')
+        TN_circ.apply_gate('U3', *params, i, gate_round=gate_round, parametrize=True)
     
-    for i in regs:
-        circ.apply_gate(
-            gate2, i, i + 1, gate_round=gate_round)
+    for i in range(0, qubit_no - 1, 2):   
+        TN_circ.apply_gate('CX', i, i + 1, gate_round=gate_round)
+         
 
+    # odd-even pairs
+    for i in range(1, qubit_no - 1, 2):
+        TN_circ.apply_gate('CX', i, i + 1, gate_round=gate_round)
+        # yes, but for 
 
-def two_qubit_layer(circ, gate2='CX', reverse=False, gate_round=None):
-    """Apply a layer of constant entangling gates.
-    """
-    regs = range(0, circ.N - 1)
-    if reverse:
-        regs = reversed(regs)
+    for i in range(1, qubit_no):
+        params = qu.randn(3, dist='uniform')
+        TN_circ.apply_gate('U3', *params, i, gate_round=gate_round, parametrize=True)
     
-    for i in regs:
-        circ.apply_gate(
-            gate2, i, i + 1, gate_round=gate_round)
+    for i in range(1, qubit_no - 1, 2):   
+        TN_circ.apply_gate('CX', i, i + 1, gate_round=gate_round)
 
 
-def two_qubit_layer(circ, gate2='CX', reverse=False, gate_round=None):
-    """Apply a layer of constant entangling gates.
-    """
-    regs = range(0, circ.N - 1)
-    if reverse:
-        regs = reversed(regs)
+
+def ansatz_circuit(n, depth):
+    TN_circ = qtn.Circuit(n) 
+    initial_layer(TN_circ, qubit_no=n, gate_round=0)  
     
-    for i in regs:
-        circ.apply_gate(
-            gate2, i, i + 1, gate_round=gate_round)
+    for r in range(1, depth+1): 
+        single_layer(TN_circ, qubit_no=n, gate_round=r)
+ 
+    return TN_circ
 
 
+# 4. Quimb TensorNetwork optimization (the target is a trotterized result)
 
-def ansatz_circuit(n, depth, gate2='CX', **kwargs):
-    """Construct a circuit of single qubit and entangling layers.
-    """
-    circ = qtn.Circuit(n, **kwargs)
-    
-    for r in range(depth):
-        # single qubit gate layer
-        single_qubit_layer(circ, gate_round=r)
-        
-        # alternate between forward and backward CX layers
-        two_qubit_layer(
-            circ, gate2=gate2, gate_round=r, reverse=r % 2 == 0)
-
-    # add a final single qubit layer
-    single_qubit_layer(circ, gate_round=r + 1)
-    
-    return circ
-
-
-# 6.2 initialize a circuit
+# TN_circ configuration 
 n = 7
-depth = 8 # "8 ansatz layers can ensure fidelity exceeds 90%"
-gate2 = 'CX'
+depth = 8
+TN_circ = ansatz_circuit(n=n, depth=depth) 
 
-circ = ansatz_circuit(n, depth, gate2=gate2)
-circ 
-
-
-# 6.3 the current unitary circuit operator as a tensor network 
-V = circ.uni
-V.draw(color=['U3', gate2], show_inds=True) 
-V.draw(color=[f'ROUND_{i}' for i in range(depth + 1)], show_inds=True)
-V.draw(color=[f'I{i}' for i in range(n)], show_inds=True)
-
-
-# 6.4 the HN model hamiltonian (target operator) 
-n=7 # 7 qubits for a 6 lattice site implementation  
-H = Hamiltonian_spin_HN(6, 1, 0.5) # site=6, J=1, gamma=0.5
-
-# 6.5 Trotterized gates operator with time evolution
-tot_t = 1 # total duration of state evolution 
-delta_t = 0.1 
-n_steps= tot_t / delta_t 
-
-U_dense = qu.expm(-1j*H*delta_t)**n_steps
-
-# 'tensorized' version of the unitary propagator 
+# target unitary operator (an analytical results without any gates/ansatz defined)
+U_dense = exp_HN_T 
 U = qtn.Tensor(
     data=U_dense.reshape([2] * (2 * n)),   
     inds=[f'k{i}' for i in range(n)] + [f'b{i}' for i in range(n)],
     tags={'U_TARGET'}
 )
-U.draw(color=['U3', gate2, 'U_TARGET']) 
-(V.H & U).draw(color=['U3', gate2, 'U_TARGET'])
 
+# Quimb Tensor Network (trainable)
+V = TN_circ.uni
 
-# 6.6 Tensor Network optimization, jax based 
 def loss(V, U):
     return 1 - abs((V.H & U).contract(all, optimize='auto-hq')) / 2**n  
 
@@ -397,47 +240,186 @@ tnopt = qtn.TNOptimizer(
     optimizer='L-BFGS-B',      # the optimization algorithm  
 )
 
-# allow 10 hops with 500 steps in each 'basin'
-V_opt = tnopt.optimize_basinhopping(n=500, nhop=10)
+# optimize params of the tensor network
+V_opt = tnopt.optimize_basinhopping(n=500, nhop=10) 
 
-# first we turn the tensor network version of V into a dense matrix 
-V_opt_dense = V_opt.to_dense([f'k{i}' for i in range(n)], [f'b{i}' for i in range(n)])
-
-# create a random initial state, and evolve it with the
-psi0 = qu.rand_ket(2**n)
-
-# this is the exact state we want
-psif_exact =  U_dense @ psi0 
-
-# this is the state our circuit will produce if fed 'psi0'
-psif_approx = V_opt_dense @ psi0
-
-# (in)fidelity
-f"Fidelity:{100 * qu.fidelity(psif_approx, psif_exact): .2f} %"
-
-circ.update_params_from(V_opt)
-circ.gates
+# update gate parameters  
+TN_circ.update_params_from(V_opt)
+TN_circ.gates
 
 
-# 7. measurement (aer simualtor, shots)
-simulator = AerSimulator()
-circ = transpile(circ, simulator)
+# 5. Convert tensor network to Qiskit quantum circuit; define initially prepared state
 
-# Run and get counts and memory
-# memory=true to get store 10,000 runs in a list  
-result = simulator.run(circ, shots=10000, memory=True).result() 
-counts = result.get_counts(circ) # an averaged result from the 10,000 runs
-memory = result.get_memory(circ)
-print(memory)
-print(len(memory))
+gate_list = []
+param_list = []
+qubit_list = []
+order_list = []
 
 
-# 8. dynamical density evolution ni(T) encoding
+for _ in TN_circ.gates:
+    gate_list.append(_.label)
+    param_list.append(_.params)
+    qubit_list.append(_.qubits)
+    order_list.append(_.round)
+ 
+quantum_circuit = []
+for i, (a,b,c,d) in enumerate(zip(gate_list, param_list, qubit_list, order_list)):
+    #quimb_gates.append(a,b,c,d)
+    quantum_circuit.append((a,b,c,d))
+    
 
 
-# 9. dynamical density evolution plot (heatmap and colorbar)
-dataset = np.random.rand(6,10)
+# define an intially prepared state
+ # physical qubit (|↓↓↓↑↓↓⟩ + |↓↓↑↓↓↓⟩)/ 2 ； initial ancilla qubit is |↑⟩
+initial_state = Statevector.from_label('1101110') + Statevector.from_label('1110110')
+initial_state = initial_state / np.linalg.norm(initial_state.data) 
+
+
+# create an Qiskit quantum circuit object
+qc = QuantumCircuit(7)
+qc.initialize(initial_state, range(7))   
+qc.set_statevector(initial_state)
+
+for gate, params, qubits, order in quantum_circuit:
+    if gate == 'U3':
+        qc.append(U3Gate(*params), qubits)
+    elif gate == 'CX':
+        qc.append(CXGate(), qubits)
+
+
+# a list with gate; params; qubit; order layout 
+quantum_circuit
+
+
+
+# initially prepared statevector (128*1 column vector) + 
+# 1 * initial U3 layer + 8 * single ansatz layer 
+
+# sanity check 
+qc.draw('mpl') 
+
+
+# 6. get statevector and measurement counts at each time step 
+
+initial_state = Statevector.from_label('1101110') + Statevector.from_label('1110110')
+initial_state = initial_state / np.linalg.norm(initial_state.data) 
+qc = QuantumCircuit(7)
+qc.initialize(initial_state, range(7))   
+
+
+# at each time step, add new gates and get the statevector information and measurements
+tot_t = 4
+timestep = 0.5 
+statevectors_list = []  
+measurement_counts_list= []
+statevector_backend = AerSimulator(method='statevector')
+measurement_backend = AerSimulator(method='statevector')
+
+
+for t in np.arange(0, 4, 0.5):
+    # Add gates corresponding to this time step
+    for gate, params, qubits, order in quantum_circuit:
+        if t > order * (tot_t  / len(quantum_circuit)):
+            if gate == 'U3':
+                qc.append(U3Gate(*params), qubits)
+            elif gate == 'CX':
+                qc.append(CXGate(), qubits)
+    
+
+    statevectors_list.append(Statevector.from_instruction(qc))
+    
+    qc.measure_all()
+    job_sim = measurement_backend.run(qc,shots=10000)
+    result_sim = job_sim.result()
+    counts = result_sim.get_counts()
+    measurement_counts_list.append(counts)
+
+
+    # Reset the state to the statevector from last timestep
+    if t < 8: 
+        statevector = statevectors_list[-1] 
+        qc = QuantumCircuit(7)  # Create a new quantum circuit
+        qc.initialize(statevector.data, range(7))  
+
+
+
+# 7. post-selection of spinup ancilla qubit 
+
+# post-selection 
+measurement_counts_postselection = []
+
+for _ in measurement_counts_list:
+    dict = {}
+    for bitstring, count in _.items():
+        if bitstring[-1] == '0':
+            dict[bitstring[:6]]=count 
+    measurement_counts_postselection.append(dict)
+
+
+
+# convert post-selected measurement outcomes to new statevector
+statevectors_postselection = []
+physical_qubits = 6
+dim = 2 ** physical_qubits
+
+
+for _ in measurement_counts_postselection:
+    statevector_reconstructed = np.zeros(dim, dtype=complex) 
+
+    for bitstring, count in _.items():
+        sv = Statevector.from_label(bitstring)
+        statevector_reconstructed += np.sqrt(count) * sv.data
+
+    norm = np.linalg.norm(statevector_reconstructed)
+    statevector_reconstructed /= norm # normalize the statevector 
+   
+    statevectors_postselection.append(statevector_reconstructed)
+
+
+# 8. dynamical density evolution ni(T) calculation
+# compute the density profile at each time step
+
+Z_operator_list = []
+for i in range(physical_qubits): # physical_qubits=6
+    operators = [identity] * physical_qubits 
+    operators[i] = sigma_z  # Replace the i-th position with sigma_z
+
+    # Compute the tensor product using np.kron
+    Z_i = operators[0]
+    for op in operators[1:]:
+        Z_i = np.kron(Z_i, op)
+    
+    Z_operator_list.append(Z_i)
+
+
+# n_i(T) = (<psi(T) | Z_i | psi(T)> + 1) / 2
+site_timestep_list = []  # 6*(1*8); 6 lattice site 8 time steps  
+for op in Z_operator_list:
+    timestep_list = []   # 1*8; one lattice site 6 time steps  
+    for state in statevectors_postselection:
+        psi_T = state
+        psi_T_dagger = np.conjugate(psi_T.T)
+        fermion_density = np.dot(psi_T_dagger, np.dot(op, psi_T)) 
+        fermion_density = (fermion_density.real+1)/2 
+        timestep_list.append(fermion_density) # density dynamics for site i
+  
+  
+    site_timestep_list.append(timestep_list) 
+    # i.e, from left to right, it is the density dynamics 
+    # for top to down, it is the layout of 0th to 5th lattice site 
+
+
+# 9. NHSE dynamics plot of HN model (fig. S2)
+
+dataset = np.array(site_timestep_list)
 plt.imshow(dataset, aspect='auto', cmap='inferno') 
-plt.colorbar()
+plt.colorbar(label="$n_i(T)$")
+
+plt.xlabel("T")
+plt.ylabel("i")
 plt.show()
 
+
+# at each timestep (each column)
+# the probability of finding the fermion at any site should sum up to 1
+# here the probability explodes 
